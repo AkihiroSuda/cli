@@ -63,6 +63,9 @@ import (
 // ErrRedirect is the error returned by checkRedirect when the request is non-GET.
 var ErrRedirect = errors.New("unexpected redirect in response")
 
+// HijackDialer is the type used for custom hijack dialer
+type HijackDialer func(ctx context.Context, network, addr string) (net.Conn, error)
+
 // Client is the API client that performs all operations
 // against a docker server.
 type Client struct {
@@ -78,6 +81,8 @@ type Client struct {
 	basePath string
 	// client used to send and receive http requests.
 	client *http.Client
+	// dialer used for hijacking. See WithHijackDialer().
+	hijackDialer HijackDialer
 	// version of the server to talk to.
 	version string
 	// custom http headers configured by users.
@@ -174,9 +179,15 @@ func WithTLSClientConfig(cacertPath, certPath, keyPath string) func(*Client) err
 // WithDialer applies the dialer.DialContext to the client transport. This can be
 // used to set the Timeout and KeepAlive settings of the client.
 func WithDialer(dialer *net.Dialer) func(*Client) error {
+	return WithDialContext(dialer.DialContext)
+}
+
+// WithDialer applies the dialer to the client transport. This can be
+// used to set the Timeout and KeepAlive settings of the client.
+func WithDialContext(dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) func(*Client) error {
 	return func(c *Client) error {
 		if transport, ok := c.client.Transport.(*http.Transport); ok {
-			transport.DialContext = dialer.DialContext
+			transport.DialContext = dialContext
 			return nil
 		}
 		return errors.Errorf("cannot apply dialer to transport: %T", c.client.Transport)
@@ -209,11 +220,30 @@ func WithHost(host string) func(*Client) error {
 	}
 }
 
-// WithHTTPClient overrides the client http client with the specified one
+// WithHTTPClient overrides the client http client with the specified one.
+//
+// This function does not overrides the dialer user for hijacking.
+// To overrides the hijack dialer, you may want to call
+// WithHijackDialer(client.Transport.(*http.Transport).DialContext) .
 func WithHTTPClient(client *http.Client) func(*Client) error {
 	return func(c *Client) error {
 		if client != nil {
 			c.client = client
+		}
+		return nil
+	}
+}
+
+// WithHijackDialer overrides the client default hijack dialer.
+// The typical usecase of WithHijackDialer is to support ContainerAttach()
+// and ContainerExecAttach() with a custom dialer.
+//
+// The hijack dialer typically corresponds to *http.Client.Transport.(*http.Tranport).DialContext .
+// See http.Transport.DialContext for more information.
+func WithHijackDialer(hijackDialer HijackDialer) func(*Client) error {
+	return func(c *Client) error {
+		if hijackDialer != nil {
+			c.hijackDialer = hijackDialer
 		}
 		return nil
 	}
@@ -266,7 +296,6 @@ func NewClientWithOpts(ops ...func(*Client) error) (*Client, error) {
 		// this to avoid breaking existing clients but this should be addressed.
 		c.scheme = "https"
 	}
-
 	return c, nil
 }
 
@@ -399,4 +428,17 @@ func (cli *Client) CustomHTTPHeaders() map[string]string {
 // Deprecated: use WithHTTPHeaders when creating the client.
 func (cli *Client) SetCustomHTTPHeaders(headers map[string]string) {
 	cli.customHTTPHeaders = headers
+}
+
+// Dialer returns a dialer for a raw stream connection, with HTTP/1.1 header, that can be used for proxying the daemon connection.
+// Used by `docker dial-stdio` (docker/cli#889).
+func (cli *Client) Dialer() func(context.Context) (net.Conn, error) {
+	return func(ctx context.Context) (net.Conn, error) {
+		if transport, ok := cli.client.Transport.(*http.Transport); ok {
+			if transport.DialContext != nil {
+				return transport.DialContext(ctx, cli.proto, cli.addr)
+			}
+		}
+		return fallbackDial(cli.proto, cli.addr, resolveTLSConfig(cli.client.Transport))
+	}
 }
