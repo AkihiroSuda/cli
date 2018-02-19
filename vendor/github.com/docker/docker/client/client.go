@@ -44,6 +44,7 @@ package client
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -62,6 +63,9 @@ import (
 // ErrRedirect is the error returned by checkRedirect when the request is non-GET.
 var ErrRedirect = errors.New("unexpected redirect in response")
 
+// HijackDialer is the type used for custom hijack dialer
+type HijackDialer func(ctx context.Context, network, addr string) (net.Conn, error)
+
 // Client is the API client that performs all operations
 // against a docker server.
 type Client struct {
@@ -77,6 +81,9 @@ type Client struct {
 	basePath string
 	// client used to send and receive http requests.
 	client *http.Client
+	// dialer user for hijacking. when non-nil, typically corresponds to
+	// client.Transport.(*http.Tranport).DialContext .
+	hijackDialer HijackDialer
 	// version of the server to talk to.
 	version string
 	// custom http headers configured by users.
@@ -138,7 +145,7 @@ func NewEnvClient() (*Client, error) {
 		version = api.DefaultVersion
 	}
 
-	cli, err := NewClient(host, version, client, nil)
+	cli, err := NewClient(host, version, client, nil, nil)
 	if err != nil {
 		return cli, err
 	}
@@ -151,11 +158,14 @@ func NewEnvClient() (*Client, error) {
 // NewClient initializes a new API client for the given host and API version.
 // It uses the given http client as transport.
 // It also initializes the custom http headers to add to each request.
+// hijackDialer can be optionally set to allow using custom dialer for hijacking.
+// When it is set, it is likely to correspond to client.Transport.(*http.Tranport).DialContext .
+// The typical usecase of hijackDialer is to allow implementing connection helpers.
 //
 // It won't send any version information if the version number is empty. It is
 // highly recommended that you set a version or your client may break if the
 // server is upgraded.
-func NewClient(host string, version string, client *http.Client, httpHeaders map[string]string) (*Client, error) {
+func NewClient(host string, version string, client *http.Client, httpHeaders map[string]string, hijackDialer HijackDialer) (*Client, error) {
 	hostURL, err := ParseHostURL(host)
 	if err != nil {
 		return nil, err
@@ -185,6 +195,12 @@ func NewClient(host string, version string, client *http.Client, httpHeaders map
 		scheme = "https"
 	}
 
+	if hijackDialer == nil {
+		hijackDialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dial(network, addr, tlsConfig)
+		}
+	}
+
 	// TODO: store URL instead of proto/addr/basePath
 	return &Client{
 		scheme:            scheme,
@@ -195,6 +211,7 @@ func NewClient(host string, version string, client *http.Client, httpHeaders map
 		client:            client,
 		version:           version,
 		customHTTPHeaders: httpHeaders,
+		hijackDialer:      hijackDialer,
 	}, nil
 }
 
