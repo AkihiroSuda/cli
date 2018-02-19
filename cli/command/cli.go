@@ -13,6 +13,7 @@ import (
 	"github.com/docker/cli/cli/config"
 	cliconfig "github.com/docker/cli/cli/config"
 	"github.com/docker/cli/cli/config/configfile"
+	"github.com/docker/cli/cli/config/connhelper"
 	cliflags "github.com/docker/cli/cli/flags"
 	manifeststore "github.com/docker/cli/cli/manifest/store"
 	registryclient "github.com/docker/cli/cli/registry/client"
@@ -244,9 +245,39 @@ func NewDockerCli(in io.ReadCloser, out, err io.Writer) *DockerCli {
 
 // NewAPIClientFromFlags creates a new APIClient from command line flags
 func NewAPIClientFromFlags(opts *cliflags.CommonOptions, configFile *configfile.ConfigFile) (client.APIClient, error) {
-	host, err := getServerHost(opts.Hosts, opts.TLSOptions)
+	unparsedHost, err := getUnparsedServerHost(opts.Hosts)
 	if err != nil {
 		return &client.Client{}, err
+	}
+	var (
+		host         string
+		httpClient   *http.Client
+		hijackDialer client.HijackDialer
+	)
+	helper, err := connhelper.GetConnectionHelper(unparsedHost, configFile.ConnectionHelpers, "docker-connection-")
+	if err != nil {
+		return &client.Client{}, err
+	}
+	if helper == nil {
+		host, err = dopts.ParseHost(opts.TLSOptions != nil, unparsedHost)
+		if err != nil {
+			return &client.Client{}, err
+		}
+		httpClient, err = newHTTPClient(host, opts.TLSOptions)
+		if err != nil {
+			return &client.Client{}, err
+		}
+		// hijackDialer is nil
+	} else {
+		host = helper.DummyHost
+		httpClient = &http.Client{
+			// No tls
+			// No proxy
+			Transport: &http.Transport{
+				DialContext: helper.Dialer,
+			},
+		}
+		hijackDialer = helper.Dialer
 	}
 
 	customHeaders := configFile.HTTPHeaders
@@ -260,15 +291,10 @@ func NewAPIClientFromFlags(opts *cliflags.CommonOptions, configFile *configfile.
 		verStr = tmpStr
 	}
 
-	httpClient, err := newHTTPClient(host, opts.TLSOptions)
-	if err != nil {
-		return &client.Client{}, err
-	}
-
-	return client.NewClient(host, verStr, httpClient, customHeaders)
+	return client.NewClient(host, verStr, httpClient, customHeaders, hijackDialer)
 }
 
-func getServerHost(hosts []string, tlsOptions *tlsconfig.Options) (string, error) {
+func getUnparsedServerHost(hosts []string) (string, error) {
 	var host string
 	switch len(hosts) {
 	case 0:
@@ -278,8 +304,7 @@ func getServerHost(hosts []string, tlsOptions *tlsconfig.Options) (string, error
 	default:
 		return "", errors.New("Please specify only one -H")
 	}
-
-	return dopts.ParseHost(tlsOptions != nil, host)
+	return host, nil
 }
 
 func newHTTPClient(host string, tlsOptions *tlsconfig.Options) (*http.Client, error) {
