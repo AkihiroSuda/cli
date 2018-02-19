@@ -63,6 +63,9 @@ import (
 // ErrRedirect is the error returned by checkRedirect when the request is non-GET.
 var ErrRedirect = errors.New("unexpected redirect in response")
 
+// HijackDialer is the type used for custom hijack dialer
+type HijackDialer func(ctx context.Context, network, addr string) (net.Conn, error)
+
 // Client is the API client that performs all operations
 // against a docker server.
 type Client struct {
@@ -78,6 +81,8 @@ type Client struct {
 	basePath string
 	// client used to send and receive http requests.
 	client *http.Client
+	// dialer used for hijacking. See WithHijackDialer().
+	hijackDialer HijackDialer
 	// version of the server to talk to.
 	version string
 	// custom http headers configured by users.
@@ -209,11 +214,30 @@ func WithHost(host string) func(*Client) error {
 	}
 }
 
-// WithHTTPClient overrides the client http client with the specified one
+// WithHTTPClient overrides the client http client with the specified one.
+//
+// This function does not overrides the dialer user for hijacking.
+// To overrides the hijack dialer, you may want to call
+// WithHijackDialer(client.Transport.(*http.Transport).DialContext) .
 func WithHTTPClient(client *http.Client) func(*Client) error {
 	return func(c *Client) error {
 		if client != nil {
 			c.client = client
+		}
+		return nil
+	}
+}
+
+// WithHijackDialer overrides the client default hijack dialer.
+// The typical usecase of WithHijackDialer is to support ContainerAttach()
+// and ContainerExecAttach() with a custom dialer.
+//
+// The hijack dialer typically corresponds to *http.Client.Transport.(*http.Tranport).DialContext .
+// See http.Transport.DialContext for more information.
+func WithHijackDialer(hijackDialer HijackDialer) func(*Client) error {
+	return func(c *Client) error {
+		if hijackDialer != nil {
+			c.hijackDialer = hijackDialer
 		}
 		return nil
 	}
@@ -247,6 +271,9 @@ func NewClientWithOpts(ops ...func(*Client) error) (*Client, error) {
 		proto:   defaultProto,
 		addr:    defaultAddr,
 	}
+	c.hijackDialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dial(network, addr, resolveTLSConfig(c.client.Transport))
+	}
 
 	for _, op := range ops {
 		if err := op(c); err != nil {
@@ -266,7 +293,6 @@ func NewClientWithOpts(ops ...func(*Client) error) (*Client, error) {
 		// this to avoid breaking existing clients but this should be addressed.
 		c.scheme = "https"
 	}
-
 	return c, nil
 }
 

@@ -15,5 +15,11 @@ func (cli *Client) DialSession(ctx context.Context, proto string, meta map[strin
 	}
 	req = cli.addHeaders(req, meta)
 
-	return cli.setupHijackConn(req, proto)
+	return cli.setupHijackConn(ctx, req, proto)
+}
+
+// DialRaw returns a raw stream connection, with HTTP/1.1 header, that can be used for proxying the daemon connection.
+// Used by `docker dial-stdio` (docker/cli#889).
+func (cli *Client) DialRaw(ctx context.Context) (net.Conn, error) {
+	return cli.hijackDialer(ctx, cli.proto, cli.addr)
 }
