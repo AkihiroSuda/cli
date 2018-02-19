@@ -19,6 +19,13 @@ func (o *OutStream) Write(p []byte) (int, error) {
 	return o.out.Write(p)
 }
 
+func (o *OutStream) Close() error {
+	if wc, ok := o.out.(io.Closer); ok {
+		return wc.Close()
+	}
+	return nil
+}
+
 // SetRawTerminal sets raw mode on the input terminal
 func (o *OutStream) SetRawTerminal() (err error) {
 	if os.Getenv("NORAW") != "" || !o.CommonStream.isTerminal {
