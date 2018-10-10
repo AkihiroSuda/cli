@@ -76,6 +76,9 @@ func (m *MountOpt) Set(value string) error {
 			case "volume-nocopy":
 				volumeOptions().NoCopy = true
 				continue
+			case "bind-norecursive":
+				bindOptions().NoRecursive = true
+				continue
 			}
 		}
 
