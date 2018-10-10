@@ -198,7 +198,7 @@ func (cli *DockerCli) initializeFromClient() {
 	ping, err := cli.client.Ping(context.Background())
 	if err != nil {
 		// Default to true if we fail to connect to daemon
-		cli.serverInfo = ServerInfo{HasExperimental: true}
+		cli.serverInfo = ServerInfo{HasExperimental: true, APIVersion: ping.APIVersion}
 
 		if ping.APIVersion != "" {
 			cli.client.NegotiateAPIVersionPing(ping)
@@ -210,6 +210,7 @@ func (cli *DockerCli) initializeFromClient() {
 		HasExperimental: ping.Experimental,
 		OSType:          ping.OSType,
 		BuildkitVersion: ping.BuilderVersion,
+		APIVersion:      ping.APIVersion,
 	}
 	cli.client.NegotiateAPIVersionPing(ping)
 }
@@ -244,6 +245,7 @@ type ServerInfo struct {
 	HasExperimental bool
 	OSType          string
 	BuildkitVersion types.BuilderVersion
+	APIVersion      string
 }
 
 // ClientInfo stores details about the supported features of the client
