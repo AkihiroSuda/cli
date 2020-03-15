@@ -6,6 +6,7 @@ import (
 	"os"
 	gosignal "os/signal"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/docker/cli/cli/command"
@@ -102,7 +103,10 @@ func ForwardAllSignals(ctx context.Context, cli command.Cli, cid string) chan os
 	signal.CatchAll(sigc)
 	go func() {
 		for s := range sigc {
-			if s == signal.SIGCHLD || s == signal.SIGPIPE {
+			// SIGURG was added because of golang 1.14 and its preemptive changes
+			// causing more signals to "show up".
+			// https://github.com/containers/libpod/issues/5483
+			if s == signal.SIGCHLD || s == signal.SIGPIPE || s == syscall.SIGURG {
 				continue
 			}
 			var sig string
